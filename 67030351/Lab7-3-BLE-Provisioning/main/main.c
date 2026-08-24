@@ -13,9 +13,40 @@
 
 static const char *TAG = "LAB7_3_BLE";
 
-#define LED_PIN_WIFI_STA     GPIO_NUM_2    // LED 1: Wi-Fi STA Status (On-board LED)
-#define LED_PIN_BLE_PROV     GPIO_NUM_4    // LED 2: BLE Provisioning Status
-#define PROV_POP_KEY         "abcd1234"   // Proof-of-Possession (PoP)
+#define FACTORY_RESET_BUTTON_GPIO  GPIO_NUM_18   // ปุ่ม Factory Reset (Active-Low ต่อลง GND)
+#define LED_PIN_WIFI_STA           GPIO_NUM_2    // LED 1: Wi-Fi STA Status (On-board LED)
+#define LED_PIN_BLE_PROV           GPIO_NUM_4    // LED 2: BLE Provisioning Status
+#define PROV_POP_KEY               "abcd1234"   // Proof-of-Possession (PoP)
+
+/* ตรวจสอบการกดปุ่ม GPIO 18 ค้างไว้ 3 วินาที (Active Low) */
+static bool check_factory_reset_button(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << FACTORY_RESET_BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+
+    ESP_LOGI(TAG, "Hold GPIO 18 button for 3 seconds to trigger Factory Reset...");
+    int hold_count = 0;
+    while (gpio_get_level(FACTORY_RESET_BUTTON_GPIO) == 0) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        hold_count++;
+        if (hold_count % 10 == 0) {
+            ESP_LOGI(TAG, "Holding button... %d/3 seconds", hold_count / 10);
+        }
+        if (hold_count >= 30) {
+            ESP_LOGW(TAG, "=================================================");
+            ESP_LOGW(TAG, ">>> FACTORY RESET TRIGGERED! ERASING NVS FLASH <<<");
+            ESP_LOGW(TAG, "=================================================");
+            return true;
+        }
+    }
+    return false;
+}
 
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
@@ -85,8 +116,18 @@ void app_main(void)
     gpio_set_level(LED_PIN_WIFI_STA, 0);
     gpio_set_level(LED_PIN_BLE_PROV, 0);
 
-    // 2. เริ่มต้น NVS Flash, Netif และ Event Loop
-    ESP_ERROR_CHECK(nvs_flash_init());
+    // 2. ตรวจสอบการกดปุ่ม GPIO 18 ค้าง 3 วินาทีเพื่อล้าง NVS Flash
+    if (check_factory_reset_button()) {
+        ESP_LOGW(TAG, "[RESET]: Factory Reset Button Triggered! Erasing NVS Flash...");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+    }
+
+    // 3. เริ่มต้น NVS Flash, Netif และ Event Loop
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -100,7 +141,7 @@ void app_main(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    // 3. กำหนดค่า Provisioning Manager เป็น BLE Scheme + คืน RAM BT เมื่อเสร็จ
+    // 4. กำหนดค่า Provisioning Manager เป็น BLE Scheme + คืน RAM BT เมื่อเสร็จ
     network_prov_mgr_config_t config = {
         .scheme = network_prov_scheme_ble,
         .scheme_event_handler = NETWORK_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM

@@ -7,9 +7,8 @@
 ให้นักศึกษาวาด Flowchart แสดงลำดับตรรกะการตรวจสอบเงื่อนไขตั้งแต่เริ่มต้นรันฟังก์ชัน `app_main()` โดยต้องครอบคลุม:
 1. การตรวจสอบสถานะปุ่ม **GPIO 18** (ตรวจจับการกดค้าง 3 วินาที)
 2. การทำงานของ `nvs_flash_init()` และกรณีที่ต้อง `nvs_flash_erase()`
-3. การตรวจสอบ Macro `#ifdef CONFIG_EXAMPLE_RESET_PROVISIONED`
-4. การเรียกฟังก์ชัน `wifi_prov_mgr_is_provisioned(&provisioned)`
-5. จุดแยกสายการทำงานเข้าสู่โหมด **Provisioning Mode** หรือ **Station Mode**
+3. การเรียกฟังก์ชัน `network_prov_mgr_is_wifi_provisioned(&provisioned)`
+4. จุดแยกสายการทำงานเข้าสู่โหมด **Provisioning Mode** หรือ **Station Mode**
 
 ```mermaid
 flowchart TD
@@ -31,15 +30,9 @@ flowchart TD
     
     InitNetif --> RegEvents["5. ลงทะเบียน Event Handlers<br/>- WIFI_EVENT (STA_START, STA_DISCONNECTED)<br/>- IP_EVENT (IP_EVENT_STA_GOT_IP)"]
     
-    RegEvents --> CheckConfig{"6. ตรวจสอบ Build-time Flag<br/>#ifdef CONFIG_EXAMPLE_RESET_PROVISIONED"}
+    RegEvents --> InitProvMgr["6. เริ่มต้น Provisioning Manager<br/>network_prov_mgr_init(config)"]
     
-    CheckConfig -- "เปิดใช้งาน (Flag = y)" --> MenuReset["[Menuconfig Reset]<br/>network_prov_mgr_reset_wifi_provisioning()<br/>ล้างค่า Credentials เก่า"]
-    CheckConfig -- "ปิดใช้งาน" --> InitProvMgr
-    MenuReset --> InitProvMgr
-    
-    InitProvMgr["7. เริ่มต้น Provisioning Manager<br/>network_prov_mgr_init(config)"]
-    
-    InitProvMgr --> CheckProv{"8. ตรวจสอบสถานะ Credentials<br/>network_prov_mgr_is_wifi_provisioned(&provisioned)"}
+    InitProvMgr --> CheckProv{"7. ตรวจสอบสถานะ Credentials<br/>network_prov_mgr_is_wifi_provisioned(&provisioned)"}
     
     CheckProv -- "provisioned == false<br/>(ว่างเปล่า / เพิ่งถูกลบ)" --> ModeUnprov["[สถานะ: NOT provisioned]<br/>- แสดง Log แจ้งเตือน NVS ว่างเปล่า<br/>- network_prov_mgr_deinit()<br/>- พร้อมรับการ Provision ใน Lab 7-2/7-3"]
     
@@ -84,49 +77,11 @@ stateDiagram-v2
 
 ## บันทึกผลการทดลอง (Experiment Results)
 
-### รายละเอียดการทดลองกลไก Reset ทั้ง 3 รูปแบบ
+### บันทึกผลการทดลองจาก Serial Monitor
 
-#### 1. CLI Erase (`idf.py erase-flash` / Developer Level)
-- **คำสั่งที่ใช้:**
-  ```bash
-  idf.py erase-flash
-  # หรือเจาะจงพอร์ต
-  idf.py -p COM24 erase-flash
-  ```
-- **การทำงานและผลกระทบต่อ Flash Memory:**
-  คำสั่งนี้จะส่งสัญญาณผ่าน Bootloader ROM ให้ทำการสั่ง **Chip Erase** ล้างข้อมูลใน Flash Memory ทุก Sector ตั้งแต่ Offset `0x00000000` ไปจนสุดขนาด Flash (2MB/4MB) ให้กลายเป็นค่า `0xFF` ทั้งหมด ส่งผลให้:
-  1. Bootloader, Partition Table, Application Firmware และ NVS ถูกลบหายไปทั้งหมด
-  2. ชิปจะไม่สามารถรันแอปพลิเคชันได้จนกว่าจะคอมไพล์และแฟลชโปรแกรมใหม่ (`idf.py flash monitor`)
-  3. หลังจากแฟลชเฟิร์มแวร์ใหม่ เมื่อเปิดเครื่อง ตัวแปร `provisioned` จะเป็น `false` ทันที
-- **พฤติกรรมของ LED 1:**
-  - หลัง Flash เสร็จสิ้น และบอร์ดบูตขึ้นมา ไฟ LED 1 ดับ (`LED_STA_OFF`) เนื่องจากอุปกรณ์ยังไม่เคยผ่านการ Provisioning และไม่ได้สั่ง `esp_wifi_start()`
-- **บันทึกผลการทดลองจาก Serial Monitor (ESP-IDF v6.0.2 Log):**
-  **[A] ขั้นตอนการสั่ง Erase Flash ผ่าน CLI Terminal:**
-  ```text
-  Executing action: erase-flash
-  Running esptool.py in directory /Users/petchauisui/Desktop/Dev/Week-07-W-iFi-Privisioning/67030351/Lab7-1-Reset-and-NVS-Forensics/build
-  "python" /Users/petchauisui/.espressif/v6.0.2/esp-idf/components/esptool_py/esptool/esptool.py -p COM24 -b 460800 --before default_reset --after hard_reset --chip esp32 erase_flash
-  esptool.py v4.8.dev0
-  Serial port COM24
-  Connecting.....
-  Chip is ESP32-D0WD-V3 (revision v3.1)
-  Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
-  Crystal is 40MHz
-  MAC: 24:0a:c4:xx:xx:xx
-  Uploading stub...
-  Running stub...
-  Stub running...
-  Changing baud rate to 460800
-  Changed.
-  Erasing flash (this may take a while)...
-  Chip erase completed successfully in 8.3s
-  Hard resetting via RTS pin...
-  Done
-  ```
-
-  **[B] ลำดับการบูตหลังแฟลชเฟิร์มแวร์ใหม่ (Flash Empty):**
-  ```text
-  I (27) boot: ESP-IDF v6.0.2 2nd stage bootloader
+#### 1. CLI Erase (`idf.py erase-flash`)
+```text
+I (27) boot: ESP-IDF v6.0.2 2nd stage bootloader
   I (27) boot: compile time Aug 24 2026 09:23:53
   I (28) boot: Multicore bootloader
   I (29) boot: chip revision: v3.1
@@ -206,113 +161,9 @@ stateDiagram-v2
 
 ---
 
-#### 2. Menuconfig Flag (`CONFIG_EXAMPLE_RESET_PROVISIONED=y` / Firmware Configuration Level)
-- **การตั้งค่า:**
-  1. รันคำสั่ง `idf.py menuconfig`
-  2. ไปที่หัวข้อ `Example Configuration` $\rightarrow$ เลือก `[*] Reset Provisioned state (Erase credentials)`
-  3. บันทึกและสั่ง `idf.py flash monitor`
-- **การทำงานและผลกระทบต่อ Flash Memory:**
-  กลไกนี้ใช้ตรรกะแบบ Macro `#ifdef CONFIG_EXAMPLE_RESET_PROVISIONED` ในการเรียกใช้ฟังก์ชัน `network_prov_mgr_reset_wifi_provisioning()` ทันทีในช่วง Bootstrapping ส่งผลให้:
-  1. ระบบทำการลบเฉพาะ Key ที่เกี่ยวข้องกับ Wi-Fi Credential (SSID, Password) ใน Namespace `nvs.net80211` ภายใน NVS Partition
-  2. เฟิร์มแวร์ส่วน Application, Bootloader และข้อมูลใน Partition อื่นๆ ยังคงอยู่ครบถ้วนสมบูรณ์
-  3. แม้ผู้ใช้จะเคย Provision สำเร็จแล้ว แต่ทุกครั้งที่ Reset/Reboot บอร์ดจะสั่งล้าง Credentials เสมอ
-- **พฤติกรรมของ LED 1:**
-  - เข้าสู่สถานะดับ (`LED_STA_OFF`) หรือหากมีการเริ่มโหมดสแกนจะเข้าสู่สถานะ `LED_STA_DISCONNECTED`
-- **บันทึกผลการทดลองจาก Serial Monitor (ESP-IDF v6.0.2 Log):**
-  ```text
-  I (27) boot: ESP-IDF v6.0.2 2nd stage bootloader
-  I (27) boot: compile time Aug 24 2026 09:23:53
-  I (28) boot: Multicore bootloader
-  I (29) boot: chip revision: v3.1
-  I (32) boot.esp32: SPI Speed      : 40MHz
-  I (35) boot.esp32: SPI Mode       : DIO
-  I (39) boot.esp32: SPI Flash Size : 2MB
-  I (42) boot: Enabling RNG early entropy source...
-  I (47) boot: Partition Table:
-  I (49) boot: ## Label            Usage          Type ST Offset   Length
-  I (56) boot:  0 nvs              WiFi data        01 02 00009000 00006000
-  I (62) boot:  1 phy_init         RF data          01 01 0000f000 00001000
-  I (69) boot:  2 factory          factory app      00 00 00010000 00100000
-  I (75) boot: End of partition table
-  I (79) esp_image: segment 0: paddr=00010020 vaddr=3f400020 size=1e188h (123272) map
-  I (130) esp_image: segment 1: paddr=0002e1b0 vaddr=3ffb0000 size=01e68h (  7784) load
-  I (133) esp_image: segment 2: paddr=00030020 vaddr=400d0020 size=98278h (623224) map
-  I (356) esp_image: segment 3: paddr=000c82a0 vaddr=3ffb1e68 size=02b34h ( 11060) load
-  I (361) esp_image: segment 4: paddr=000caddc vaddr=40080000 size=18104h ( 98564) load
-  I (401) esp_image: segment 5: paddr=000e2ee8 vaddr=50000000 size=00028h (    40) load
-  I (414) boot: Loaded app from partition at offset 0x10000
-  I (414) boot: Disabling RNG early entropy source...
-  I (424) cpu_start: Multicore app
-  I (432) cpu_start: GPIO 3 and 1 are used as console UART I/O pins
-  I (433) cpu_start: Pro cpu start user code
-  I (433) cpu_start: cpu freq: 160000000 Hz
-  I (434) app_init: Application information:
-  I (438) app_init: Project name:     lab7_1_reset_nvs_forensics
-  I (444) app_init: App version:      18ddd5a-dirty
-  I (448) app_init: Compile time:     Aug 24 2026 09:23:45
-  I (453) app_init: ELF file SHA256:  9fab49584...
-  I (458) app_init: ESP-IDF:          v6.0.2
-  I (461) efuse_init: Min chip rev:     v0.0
-  I (465) efuse_init: Max chip rev:     v3.99 
-  I (469) efuse_init: Chip rev:         v3.1
-  I (473) heap_init: Initializing. RAM available for dynamic allocation:
-  I (480) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM
-  I (484) heap_init: At 3FFB8EB0 len 00027150 (156 KiB): DRAM
-  I (490) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM
-  I (495) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
-  I (501) heap_init: At 40098104 len 00007EFC (31 KiB): IRAM
-  W (507) spi_flash: Detected boya flash chip but using generic driver. For optimal functionality, enable `SPI_FLASH_SUPPORT_BOYA_CHIP` in menuconfig
-  I (519) spi_flash: detected chip: generic
-  I (522) spi_flash: flash io: dio
-  W (525) spi_flash: Detected size(4096k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
-  I (539) main_task: Started on CPU0
-  I (539) main_task: Calling app_main()
-  I (539) LAB7_1_RESET: Hold GPIO 18 button for 3 seconds to trigger Factory Reset...
-  I (549) wifi:wifi driver task: 3ffc1a8c, prio:23, stack:6656, core=0
-  I (549) wifi:wifi firmware version: 00ad238
-  I (549) wifi:wifi certification version: v7.0
-  I (549) wifi:config NVS flash: enabled
-  I (549) wifi:config nano formatting: disabled
-  I (559) wifi:Init data frame dynamic rx buffer num: 32
-  I (559) wifi:Init static rx mgmt buffer num: 5
-  I (569) wifi:Init management short buffer num: 32
-  I (569) wifi:Init dynamic tx buffer num: 32
-  I (569) wifi:Init static rx buffer size: 1600
-  I (579) wifi:Init static rx buffer num: 10
-  I (579) wifi:Init dynamic rx buffer num: 32
-  I (589) wifi_init: rx ba win: 6
-  I (589) wifi_init: accept mbox: 6
-  I (589) wifi_init: tcpip mbox: 32
-  I (599) wifi_init: udp mbox: 6
-  I (599) wifi_init: tcp mbox: 6
-  I (599) wifi_init: tcp tx win: 5760
-  I (599) wifi_init: tcp rx win: 5760
-  I (609) wifi_init: tcp mss: 1440
-  I (609) wifi_init: WiFi IRAM OP enabled
-  I (609) wifi_init: WiFi RX IRAM OP enabled
-  I (619) LAB7_1_RESET: Resetting provisioned state (Build-time config enabled)...
-  I (629) wifi_prov_mgr: Erasing Wi-Fi credentials from NVS namespace "nvs.net80211"
-  W (639) LAB7_1_RESET: --------------------------------------------------
-  W (649) LAB7_1_RESET: [STATUS]: Device is NOT provisioned (NVS is empty)
-  W (649) LAB7_1_RESET: Ready for Provisioning Lab 7-2 (SoftAP) or 7-3 (BLE)!
-  W (659) LAB7_1_RESET: --------------------------------------------------
-  ```
-
----
-
-#### 3. Hardware Button (GPIO 18 / Consumer Hardware Level)
-- **วิธีการทดลอง:**
-  ต่อสวิตช์ปุ่มกดระหว่างขา **GPIO 18** กับ **GND** (ใช้ Internal Pull-up) และกดปุ่มค้างไว้ 3 วินาทีในขณะที่บอร์ดกำลังทำงานหรือเริ่มเปิดเครื่อง
-- **การทำงานและผลกระทบต่อ Flash Memory:**
-  โปรแกรมจะวน Loop ตรวจจับสถานะ Active-Low (`0`) บน GPIO 18 ต่อเนื่องครบ 30 ticks (30 x 100ms = 3 วินาที) เมื่อครบเงื่อนไขจะสั่งฟังก์ชัน `nvs_flash_erase()` ส่งผลให้:
-  1. ล้างข้อมูลเฉพาะใน Partition `nvs` (Offset `0x9000` ขนาด `0x6000`) ให้กลับเป็นค่าว่าง `0xFF`
-  2. เฟิร์มแวร์ Application ใน Factory Partition ยังคงอยู่ ไม่ต้องแฟลชโปรแกรมใหม่
-  3. บอร์ดจะเข้าสู่สถานะ `Device is NOT provisioned` พร้อมรับการเชื่อมต่อใหม่ทันที
-- **พฤติกรรมของ LED 1:**
-  - เมื่อเริ่มบูต LED 1 ดับอยู่ และคงสถานะดับ (`LED_STA_OFF`) หลัง Flash Erase เนื่องจากยังไม่ได้เข้าสู่ Station Mode
-- **บันทึกผลการทดลองจาก Serial Monitor (ESP-IDF v6.0.2 Log):**
-  ```text
-  I (27) boot: ESP-IDF v6.0.2 2nd stage bootloader
+#### 2. Hardware Button (GPIO 18)
+```text
+I (27) boot: ESP-IDF v6.0.2 2nd stage bootloader
   I (27) boot: compile time Aug 24 2026 09:23:53
   I (28) boot: Multicore bootloader
   I (29) boot: chip revision: v3.1
@@ -402,8 +253,7 @@ stateDiagram-v2
 | รูปแบบการ Reset | คำสั่ง / พฤติกรรมที่ทำ | พฤติกรรมของ LED แต่ละดวงหลังเปิดเครื่อง | สถานะใน Serial Monitor |
 | :--- | :--- | :--- | :--- |
 | **1. CLI Erase** | `idf.py erase-flash` | **LED 1 (GPIO 2):** ดับสนิท (`LED_STA_OFF`) เนื่องจากยังไม่มี Credentials และระบบยังไม่เข้าสู่โหมดเชื่อมต่อ Station | แสดงขั้นตอน Chip Erase สำเร็จ เมื่อแฟลชโค้ดใหม่ NVS ถูก Format ใหม่ และขึ้น `[STATUS]: Device is NOT provisioned (NVS is empty)` |
-| **2. Menuconfig Flag** | `CONFIG_EXAMPLE_RESET_PROVISIONED=y` | **LED 1 (GPIO 2):** ดับสนิท (`LED_STA_OFF`) หรือกะพริบ Alert หากเริ่มสแกน | รันฟังก์ชันล้าง Credentials ใน Namespace `nvs.net80211` และรายงาน `[STATUS]: Device is NOT provisioned` ทุกครั้งที่บูตเครื่อง |
-| **3. Hardware Button (GPIO 18)** | กดปุ่ม GPIO 18 ค้าง 3 วินาที | **LED 1 (GPIO 2):** ดับสนิท (`LED_STA_OFF`) ขณะตรวจจับปุ่ม และคงสถานะดับหลังสั่ง Flash Erase | ตรวจพบปุ่ม Active-Low นับ 1/3, 2/3, 3/3 วิ $\rightarrow$ `>>> FACTORY RESET TRIGGERED! ERASING NVS FLASH <<<` $\rightarrow$ `[STATUS]: Device is NOT provisioned` |
+| **2. Hardware Button (GPIO 18)** | กดปุ่ม GPIO 18 ค้าง 3 วินาที | **LED 1 (GPIO 2):** ดับสนิท (`LED_STA_OFF`) ขณะตรวจจับปุ่ม และคงสถานะดับหลังสั่ง Flash Erase | ตรวจพบปุ่ม Active-Low นับ 1/3, 2/3, 3/3 วิ $\rightarrow$ `>>> FACTORY RESET TRIGGERED! ERASING NVS FLASH <<<` $\rightarrow$ `[STATUS]: Device is NOT provisioned` |
 
 ---
 
@@ -1007,3 +857,461 @@ Descriptor **`0x2901` (Characteristic User Description Descriptor)** เป็�
 - เมื่อกระบวนการ Provisioning เสร็จสิ้นลง อุปกรณ์ IoT จะเข้าสู่สถานะการทำงานปกติผ่านเครือข่าย Wi-Fi เท่านั้น และไม่มีความจำเป็นต้องเปิดใช้งานบลูทูธอีกต่อไป
 - การเรียกใช้ฟังก์ชัน **`esp_bt_mem_release(ESP_BT_MODE_BTDM)`** (ผ่าน Option `NETWORK_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM`) จะทำการปิดวงจร Bluetooth Controller และ **คืนพื้นที่ DRAM ทั้งหมดกลับเข้าสู่ System Heap Memory**
 - ประโยชน์คือ ทำให้เฟิร์มแวร์มีหน่วยความจำ RAM เหลือว่างเพิ่มขึ้นมหาศาล สำหรับนำไปใช้รัน Task หลักของระบบ, บริหารจัดการคิวส่งข้อมูล MQTT/HTTP, หรือใช้รองรับ TLS/HTTPS Crypto Buffers ขนาดใหญ่ได้อย่างเสถียร โดยไม่เกิดปัญหาหน่วยความจำไม่เพียงพอ (Out of Memory / Heap Starvation)
+
+---
+---
+
+# ใบงานที่ 7.4: การทดสอบ Security Schemes (PoP) และการรับส่ง Custom Data Endpoints
+
+---
+
+## 1. กิจกรรมถอดรหัสซอร์สโค้ดและเขียนผังงาน (Code Deconstruction & Security Flow Assignment)
+
+### ภารกิจที่ 1: ผังขั้นตอนการตรวจสอบ PoP (Security Handshake Decision Flow)
+แผนภาพลำดับการตัดสินใจ (Flowchart) แสดงขั้นตอนการแลกเปลี่ยนกุญแจความปลอดภัย (Security 1 Handshake) และการตรวจสอบสิทธิ์ด้วยรหัส Proof-of-Possession (PoP) ระหว่าง Mobile App กับ ESP32 Protocomm Security Layer
+
+```mermaid
+flowchart TD
+    Start(["⚡ เริ่มต้นกระบวนการ Security Handshake"]) --> KeyExchange["Mobile App ส่ง Client Public Key (X25519) + Random Salt"]
+    KeyExchange --> ComputeKey["ESP32 สร้าง Shared Secret (ECDH Key Exchange)"]
+    ComputeKey --> HashCheck{"ตรวจสอบความถูกต้องของรหัส PoP<br/>(Client Verification Hash vs Stored PoP: 'abcd1234')"}
+    
+    HashCheck -- "❌ PoP ไม่ถูกต้อง (Invalid PoP)" --> Mismatch["Trigger Event: PROTOCOMM_SECURITY_SESSION_CREDENTIALS_MISMATCH<br/>- แสดง Log: '[SECURITY ALERT]: INVALID PoP / Unauthorized Access!'<br/>- ส่งข้อความปฏิเสธ Session Handshake กลับไปยัง Mobile App"]
+    Mismatch --> Reject(["ปฏิเสธการเชื่อมต่อ / ไม่อนุญาตให้เข้าถึง Endpoints"])
+    
+    HashCheck -- "✅ PoP ถูกต้อง (Valid PoP)" --> SetupOK["Trigger Event: PROTOCOMM_SECURITY_SESSION_SETUP_OK<br/>- แสดง Log: '[SECURITY SUCCESS]: Valid PoP! Secured Session OK!'<br/>- สถาปนากุญแจเข้ารหัส AES-CTR Session Key สำเร็จ"]
+    SetupOK --> AllowEndpoints(["อนุญาตให้เข้าถึง Custom Data & Wi-Fi Provisioning Endpoints"])
+
+    style Start fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
+    style HashCheck fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+    style Mismatch fill:#ffebee,stroke:#c62828,stroke-width:2px;
+    style SetupOK fill:#e8f8f5,stroke:#2e7d32,stroke-width:2px;
+    style AllowEndpoints fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
+    style Reject fill:#fbe9e7,stroke:#d84315,stroke-width:2px;
+```
+
+---
+
+### ภารกิจที่ 2: ผังการรับส่งข้อมูลผ่าน Custom Endpoint (Custom Data Handler Flow)
+แผนภาพการทำงานของฟังก์ชัน `custom_prov_data_handler()` เมื่อรับ-ส่งข้อมูลเฉพาะของแอปพลิเคชัน
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as 📱 Mobile App (Provisioner)
+    participant Proto as 🔒 Protocomm Stack (AES-CTR)
+    participant Handler as ⚙️ custom_prov_data_handler()
+    participant Heap as 💾 System Heap Memory
+
+    App->>Proto: ส่งข้อมูลที่เข้ารหัสมายัง Endpoint "custom-data"<br/>(เช่น Payload: "USER_ID:67030351_ACTIVATE")
+    Proto->>Proto: ถอดรหัสข้อมูลด้วย AES-CTR Session Key
+    Proto->>Handler: เรียก Handler(session_id, inbuf, inlen, &outbuf, &outlen)
+    
+    Note over Handler: อ่านค่า inbuf และพิมพ์ Log:<br/>"[CUSTOM DATA RECEIVED]: USER_ID:67030351_ACTIVATE"
+    
+    Handler->>Heap: strdup("ACK_FROM_ESP32_SUCCESS") จัดสรร Memory บน Heap
+    Heap-->>Handler: คืนค่า Pointer หน่วยความจำ (*outbuf)
+    Note over Handler: กำหนดค่า *outlen = strlen(response) + 1<br/>และ return ESP_OK
+    
+    Handler-->>Proto: ส่ง Pointer *outbuf และขนาดข้อมูลกลับไปยัง Protocomm
+    Proto->>Proto: เข้ารหัสข้อความตอบกลับด้วย AES-CTR
+    Proto-->>App: ส่งข้อความ Payload ตอบกลับไปยัง Mobile App
+    
+    Note over Proto, Heap: Protocomm เรียก free(*outbuf)<br/>เพื่อคืนหน่วยความจำ Heap โดยอัตโนมัติ (ป้องกัน Memory Leak)
+```
+
+> **คำอธิบายทางเทคนิคด้านหน่วยความจำ (Heap vs Stack):**
+> ตัวแปร `*outbuf` ต้องถูกจัดสรรบน **Heap Memory** (ผ่าน `strdup()` หรือ `malloc()`) เนื่องจากสถาปัตยกรรมของ Protocomm Layer ทำงานแบบ Asynchronous ข้อมูลตอบกลับจะยังไม่ถูกส่งออกไปในทันทีที่ฟังก์ชัน `custom_prov_data_handler()` ทำงานจบ หากใช้ตัวแปรแบบ Local Stack Array หน่วยความจำจะถูกทำลายทันทีที่ออกจาก Scope ของฟังก์ชัน ทำให้ข้อมูลสูญหายและเกิด Dangling Pointer ได้ ดังนั้น Protocomm จึงออกแบบสัญญาการทำงาน (API Contract) ให้ Handler เป็นผู้จัดสรรหน่วยความจำบน Heap และตัว Protocomm Stack จะเป็นผู้รับผิดชอบในการเรียกคำสั่ง `free(*outbuf)` คืนสู่ระบบ Heap อัตโนมัติหลังส่งแพ็กเก็ตเสร็จสมบูรณ์
+
+---
+
+## 2. บันทึกผล Serial Monitor Log (แยกเป็น 2 ชุดตามการทดลอง)
+
+### 📌 1. Log ต่อ Wi-Fi ไม่สำเร็จ (ใส่รหัสผ่าน Wi-Fi ผิดพลาด / Wi-Fi Authentication Failure)
+*Log แสดงการเชื่อมต่อ BLE และยืนยันตัวตนด้วย PoP สำเร็จ แต่เมื่อส่งรหัสผ่าน Wi-Fi ที่ผิดพลาด ตัวบอร์ด ESP32 จะตัดการเชื่อมต่อและแจ้งเตือน `STA Auth Error` (Disconnect Reason 15) จากนั้นจะกลับสู่โหมด BLE Advertising เพื่อรอรับการตั้งค่าใหม่อีกครั้ง*
+
+```text
+I (27) boot: ESP-IDF v6.0.2 2nd stage bootloader
+I (27) boot: compile time Aug 24 2026 11:40:36
+I (28) boot: Multicore bootloader
+I (29) boot: chip revision: v3.1
+I (32) boot.esp32: SPI Speed      : 40MHz
+I (35) boot.esp32: SPI Mode       : DIO
+I (39) boot.esp32: SPI Flash Size : 2MB
+I (42) boot: Enabling RNG early entropy source...
+I (47) boot: Partition Table:
+I (49) boot: ## Label            Usage          Type ST Offset   Length
+I (56) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (62) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (69) boot:  2 factory          factory app      00 00 00010000 00150000
+I (75) boot: End of partition table
+I (79) esp_image: segment 0: paddr=00010020 vaddr=3f400020 size=2a890h (174224) map
+I (148) esp_image: segment 1: paddr=0003a8b8 vaddr=3ffbdb60 size=05760h ( 22368) load
+I (157) esp_image: segment 2: paddr=00040020 vaddr=400d0020 size=c2b18h (797464) map
+I (442) esp_image: segment 3: paddr=00102b40 vaddr=3ffc32c0 size=00bbch (  3004) load
+I (443) esp_image: segment 4: paddr=00103704 vaddr=40080000 size=1f880h (129152) load
+I (498) esp_image: segment 5: paddr=00122f8c vaddr=50000000 size=00028h (    40) load
+I (514) boot: Loaded app from partition at offset 0x10000
+I (515) boot: Disabling RNG early entropy source...
+I (525) cpu_start: Multicore app
+I (533) cpu_start: GPIO 3 and 1 are used as console UART I/O pins
+I (534) cpu_start: Pro cpu start user code
+I (534) cpu_start: cpu freq: 160000000 Hz
+I (535) app_init: Application information:
+I (539) app_init: Project name:     lab7_4_custom_data_security
+I (545) app_init: App version:      21f9d47-dirty
+I (549) app_init: Compile time:     Aug 24 2026 11:40:30
+I (554) app_init: ELF file SHA256:  40e1da57b...
+I (559) app_init: ESP-IDF:          v6.0.2
+I (562) efuse_init: Min chip rev:     v0.0
+I (566) efuse_init: Max chip rev:     v3.99 
+I (570) efuse_init: Chip rev:         v3.1
+I (574) heap_init: Initializing. RAM available for dynamic allocation:
+I (581) heap_init: At 3FFAFF10 len 000000F0 (0 KiB): DRAM
+I (586) heap_init: At 3FFB6388 len 00001C78 (7 KiB): DRAM
+I (591) heap_init: At 3FFB9A20 len 00004108 (16 KiB): DRAM
+I (596) heap_init: At 3FFC9238 len 00016DC8 (91 KiB): DRAM
+I (601) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM
+I (606) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
+I (612) heap_init: At 4009F880 len 00000780 (1 KiB): IRAM
+W (618) spi_flash: Detected boya flash chip but using generic driver. For optimal functionality, enable `SPI_FLASH_SUPPORT_BOYA_CHIP` in menuconfig
+I (630) spi_flash: detected chip: generic
+I (634) spi_flash: flash io: dio
+W (637) spi_flash: Detected size(4096k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (650) coexist: coex firmware version: 6f3d08c
+I (654) main_task: Started on CPU0
+I (654) main_task: Calling app_main()
+I (654) LAB7_4_CUSTOM: Hold GPIO 18 button for 3 seconds to trigger Factory Reset...
+I (694) wifi:wifi driver task: 3ffcd4a0, prio:23, stack:6656, core=0
+I (694) wifi:wifi firmware version: 00ad238
+I (694) wifi:wifi certification version: v7.0
+I (694) wifi:config NVS flash: enabled
+I (694) wifi:config nano formatting: disabled
+I (704) wifi:Init data frame dynamic rx buffer num: 32
+I (704) wifi:Init static rx mgmt buffer num: 5
+I (714) wifi:Init management short buffer num: 32
+I (714) wifi:Init dynamic tx buffer num: 32
+I (714) wifi:Init static rx buffer size: 1600
+I (724) wifi:Init static rx buffer num: 10
+I (724) wifi:Init dynamic rx buffer num: 32
+I (734) wifi_init: rx ba win: 6
+I (734) wifi_init: accept mbox: 6
+I (734) wifi_init: tcpip mbox: 32
+I (734) wifi_init: udp mbox: 6
+I (744) wifi_init: tcp mbox: 6
+I (744) wifi_init: tcp tx win: 5760
+I (744) wifi_init: tcp rx win: 5760
+I (754) wifi_init: tcp mss: 1440
+I (754) wifi_init: WiFi IRAM OP enabled
+I (754) wifi_init: WiFi RX IRAM OP enabled
+I (764) network_prov_scheme_ble: BT memory released
+I (764) phy_init: phy_version 4863,a3a4459,Oct 28 2025,14:30:06
+W (774) phy_init: failed to load RF calibration data (0x1102), falling back to full calibration
+I (854) phy_init: Saving new calibration data due to checksum failure or outdated calibration data, mode(2)
+I (864) wifi:mode : sta (88:57:21:ae:44:84)
+I (864) wifi:enable tsf
+W (874) BTDM_INIT: esp_bt_controller_rom_mem_release already released, mode 2
+I (874) BTDM_INIT: BT controller compile version [e02a38e]
+I (874) BTDM_INIT: Using main XTAL as clock source
+I (884) BTDM_INIT: Bluetooth MAC: 88:57:21:ae:44:86
+I (1134) protocomm_nimble: BLE Host Task Started
+I (1144) network_prov_mgr: Provisioning started with service name : PROV_AE4484 
+I (1144) LAB7_4_CUSTOM: [PROV EVENT]: BLE Provisioning Started (Advertising)!
+I (1144) LAB7_4_CUSTOM: --------------------------------------------------
+I (1154) LAB7_4_CUSTOM: [QR CODE URL]: Click or copy the URL below:
+I (1164) LAB7_4_CUSTOM: https://espressif.github.io/esp-jumpstart/qrcode.html?data=%7B%22ver%22%3A%22v1%22%2C%22name%22%3A%22PROV_AE4484%22%2C%22pop%22%3A%22abcd1234%22%2C%22transport%22%3A%22ble%22%7D
+I (1174) LAB7_4_CUSTOM: Payload JSON: {"ver":"v1","name":"PROV_AE4484","pop":"abcd1234","transport":"ble"}
+I (1184) NimBLE: GAP procedure initiated: advertise; 
+I (1194) NimBLE: disc_mode=2
+I (1194) NimBLE:  adv_channel_map=0 own_addr_type=0 adv_filter_policy=0 adv_itvl_min=256 adv_itvl_max=256
+I (1204) NimBLE: 
+
+I (1204) LAB7_4_CUSTOM: --------------------------------------------------
+I (1214) main_task: Returned from app_main()
+I (16794) protocomm_nimble: mtu update event; conn_handle=0 cid=4 mtu=256
+I (17644) security1: ff a0 ba 7f a3 e7 ba 71 ac fc 83 02 da 90 69 77
+I (17644) security1: 01 bd 34 5a 15 8c b1 0f e7 8f 06 ba b0 fc 9c 42
+I (17644) security1: 8f 72 80 3f 24 0f 00 93 4e fc bf 59 d6 fd 9e 14
+I (17644) security1: 5e 64 84 72 e8 72 e2 8e ec c4 de 41 cd 3d 45 2f
+I (17944) security1: 52 3e b6 5b ad a1 fe 1d be f4 0a c9 8e 57 19 9b
+I (17944) security1: 0f fa c5 44 46 dc 67 df 08 92 d0 2a f9 18 02 b2
+I (17944) security1: 89 f1 13 be 1a ad 23 32 6e 68 d6 fc db 57 6e 1b
+I (18174) security1: 1b 14 32 b1 af 29 5a 1b db 02 f8 36 53 73 51 9e
+I (18174) security1: 62 1c fc d3 9e 5f bc 15 dc 0e 46 d1 f5 06 df 1f
+I (18174) security1: ff a0 ba 7f a3 e7 ba 71 ac fc 83 02 da 90 69 77
+I (18184) security1: 01 bd 34 5a 15 8c b1 0f e7 8f 06 ba b0 fc 9c 42
+I (18184) security1: 69 19 b5 f7 d7 b9 e3 8a 5a 10 3b ed d8 09 ed 97
+I (18194) security1: 67 f6 f2 25 46 b0 a6 19 89 0e 62 e9 0e 38 35 4b
+I (18204) LAB7_4_CUSTOM: --------------------------------------------------
+I (18204) LAB7_4_CUSTOM: [SECURITY SUCCESS]: Valid PoP! Secured Session OK!
+I (18214) LAB7_4_CUSTOM: --------------------------------------------------
+W (30234) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2
+I (36384) wifi:new:<7,0>, old:<1,0>, ap:<255,255>, sta:<7,0>, prof:1, snd_ch_cfg:0x0
+I (36384) wifi:state: init -> auth (0xb0)
+I (36394) wifi:state: auth -> assoc (0x0)
+I (36414) wifi:state: assoc -> run (0x10)
+I (39404) wifi:state: run -> init (0xf00)
+I (39424) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy
+
+W (39424) LAB7_4_CUSTOM: [WIFI]: Disconnected, reconnecting...
+E (39424) network_prov_mgr: STA Disconnected
+E (39424) network_prov_mgr: Disconnect reason : 15
+E (39434) network_prov_mgr: STA Auth Error
+I (40834) NimBLE: GAP procedure initiated: advertise; 
+I (40834) NimBLE: disc_mode=2
+I (40834) NimBLE:  adv_channel_map=0 own_addr_type=0 adv_filter_policy=0 adv_itvl_min=256 adv_itvl_max=256
+I (40834) NimBLE: 
+
+I (44254) wifi:state: init -> auth (0xb0)
+I (44264) wifi:state: auth -> assoc (0x0)
+I (44274) wifi:state: assoc -> run (0x10)
+I (47274) wifi:state: run -> init (0xf00)
+I (47284) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy
+
+W (47284) LAB7_4_CUSTOM: [WIFI]: Disconnected, reconnecting...
+E (47284) network_prov_mgr: STA Disconnected
+E (47284) network_prov_mgr: Disconnect reason : 15
+E (47294) network_prov_mgr: STA Auth Error
+I (52114) wifi:state: init -> auth (0xb0)
+I (52124) wifi:state: auth -> assoc (0x0)
+I (52134) wifi:state: assoc -> run (0x10)
+```
+
+---
+
+### 📌 2. Log ต่อ Wi-Fi สำเร็จ (Factory Reset ด้วยปุ่ม GPIO 18 และใส่รหัสผ่านถูกต้อง)
+*Log แสดงการกดปุ่ม GPIO 18 ค้าง 3 วินาทีเพื่อสั่ง Factory Reset และลบ NVS Flash จากนั้นเปิด BLE Service `PROV_AE4484`, ทำ Security 1 Handshake ด้วย PoP `abcd1234`, รับค่า Wi-Fi SSID `Siwapat-4418` พร้อมรหัสผ่านที่ถูกต้อง, เชื่อมต่อสำเร็จจนได้รับ IP `192.168.1.189`, และปิดการทำงานพร้อมปล่อย RAM ของ Bluetooth คืนสู่ระบบ (`BTDM memory released`)*
+
+```text
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0040,len:6272
+load:0x40078000,len:15820
+load:0x40080400,len:3920
+--- 0x40080400: _invalid_pc_placeholder at /Users/petchauisui/.espressif/v6.0.2/esp-idf/components/xtensa/xtensa_vectors.S:2259
+entry 0x40080644
+--- 0x40080644: call_start_cpu0 at /Users/petchauisui/.espressif/v6.0.2/esp-idf/components/bootloader/subproject/main/bootloader_start.c:27
+I (27) boot: ESP-IDF v6.0.2 2nd stage bootloader
+I (27) boot: compile time Aug 24 2026 11:40:36
+I (27) boot: Multicore bootloader
+I (29) boot: chip revision: v3.1
+I (32) boot.esp32: SPI Speed      : 40MHz
+I (35) boot.esp32: SPI Mode       : DIO
+I (39) boot.esp32: SPI Flash Size : 2MB
+I (42) boot: Enabling RNG early entropy source...
+I (47) boot: Partition Table:
+I (49) boot: ## Label            Usage          Type ST Offset   Length
+I (56) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (62) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (69) boot:  2 factory          factory app      00 00 00010000 00150000
+I (75) boot: End of partition table
+I (79) esp_image: segment 0: paddr=00010020 vaddr=3f400020 size=2a890h (174224) map
+I (148) esp_image: segment 1: paddr=0003a8b8 vaddr=3ffbdb60 size=05760h ( 22368) load
+I (157) esp_image: segment 2: paddr=00040020 vaddr=400d0020 size=c2b18h (797464) map
+I (442) esp_image: segment 3: paddr=00102b40 vaddr=3ffc32c0 size=00bbch (  3004) load
+I (443) esp_image: segment 4: paddr=00103704 vaddr=40080000 size=1f880h (129152) load
+I (498) esp_image: segment 5: paddr=00122f8c vaddr=50000000 size=00028h (    40) load
+I (514) boot: Loaded app from partition at offset 0x10000
+I (515) boot: Disabling RNG early entropy source...
+I (525) cpu_start: Multicore app
+I (533) cpu_start: GPIO 3 and 1 are used as console UART I/O pins
+I (534) cpu_start: Pro cpu start user code
+I (534) cpu_start: cpu freq: 160000000 Hz
+I (535) app_init: Application information:
+I (539) app_init: Project name:     lab7_4_custom_data_security
+I (545) app_init: App version:      21f9d47-dirty
+I (549) app_init: Compile time:     Aug 24 2026 11:40:30
+I (554) app_init: ELF file SHA256:  40e1da57b...
+I (559) app_init: ESP-IDF:          v6.0.2
+I (562) efuse_init: Min chip rev:     v0.0
+I (566) efuse_init: Max chip rev:     v3.99 
+I (570) efuse_init: Chip rev:         v3.1
+I (574) heap_init: Initializing. RAM available for dynamic allocation:
+I (581) heap_init: At 3FFAFF10 len 000000F0 (0 KiB): DRAM
+I (586) heap_init: At 3FFB6388 len 00001C78 (7 KiB): DRAM
+I (591) heap_init: At 3FFB9A20 len 00004108 (16 KiB): DRAM
+I (596) heap_init: At 3FFC9238 len 00016DC8 (91 KiB): DRAM
+I (601) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM
+I (606) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
+I (612) heap_init: At 4009F880 len 00000780 (1 KiB): IRAM
+W (618) spi_flash: Detected boya flash chip but using generic driver. For optimal functionality, enable `SPI_FLASH_SUPPORT_BOYA_CHIP` in menuconfig
+I (630) spi_flash: detected chip: generic
+I (634) spi_flash: flash io: dio
+W (637) spi_flash: Detected size(4096k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (650) coexist: coex firmware version: 6f3d08c
+I (654) main_task: Started on CPU0
+I (654) main_task: Calling app_main()
+I (654) LAB7_4_CUSTOM: Hold GPIO 18 button for 3 seconds to trigger Factory Reset...
+I (1664) LAB7_4_CUSTOM: Holding button... 1/3 seconds
+I (2664) LAB7_4_CUSTOM: Holding button... 2/3 seconds
+I (3664) LAB7_4_CUSTOM: Holding button... 3/3 seconds
+W (3664) LAB7_4_CUSTOM: =================================================
+W (3664) LAB7_4_CUSTOM: >>> FACTORY RESET TRIGGERED! ERASING NVS FLASH <<<
+W (3664) LAB7_4_CUSTOM: =================================================
+W (3674) LAB7_4_CUSTOM: [RESET]: Factory Reset Button Triggered! Erasing NVS Flash...
+I (3784) wifi:wifi driver task: 3ffcd4c0, prio:23, stack:6656, core=0
+I (3794) wifi:wifi firmware version: 00ad238
+I (3794) wifi:wifi certification version: v7.0
+I (3794) wifi:config NVS flash: enabled
+I (3794) wifi:config nano formatting: disabled
+I (3794) wifi:Init data frame dynamic rx buffer num: 32
+I (3804) wifi:Init static rx mgmt buffer num: 5
+I (3804) wifi:Init management short buffer num: 32
+I (3814) wifi:Init dynamic tx buffer num: 32
+I (3814) wifi:Init static rx buffer size: 1600
+I (3824) wifi:Init static rx buffer num: 10
+I (3824) wifi:Init dynamic rx buffer num: 32
+I (3834) wifi_init: rx ba win: 6
+I (3834) wifi_init: accept mbox: 6
+I (3834) wifi_init: tcpip mbox: 32
+I (3834) wifi_init: udp mbox: 6
+I (3844) wifi_init: tcp mbox: 6
+I (3844) wifi_init: tcp tx win: 5760
+I (3844) wifi_init: tcp rx win: 5760
+I (3854) wifi_init: tcp mss: 1440
+I (3854) wifi_init: WiFi IRAM OP enabled
+I (3854) wifi_init: WiFi RX IRAM OP enabled
+I (3864) network_prov_scheme_ble: BT memory released
+I (3864) phy_init: phy_version 4863,a3a4459,Oct 28 2025,14:30:06
+W (3874) phy_init: failed to load RF calibration data (0x1102), falling back to full calibration
+I (3954) phy_init: Saving new calibration data due to checksum failure or outdated calibration data, mode(2)
+I (3964) wifi:mode : sta (88:57:21:ae:44:84)
+I (3964) wifi:enable tsf
+W (3974) BTDM_INIT: esp_bt_controller_rom_mem_release already released, mode 2
+I (3974) BTDM_INIT: BT controller compile version [e02a38e]
+I (3974) BTDM_INIT: Using main XTAL as clock source
+I (3984) BTDM_INIT: Bluetooth MAC: 88:57:21:ae:44:86
+I (4224) protocomm_nimble: BLE Host Task Started
+I (4234) network_prov_mgr: Provisioning started with service name : PROV_AE4484 
+I (4234) LAB7_4_CUSTOM: [PROV EVENT]: BLE Provisioning Started (Advertising)!
+I (4244) LAB7_4_CUSTOM: --------------------------------------------------
+I (4244) LAB7_4_CUSTOM: [QR CODE URL]: Click or copy the URL below:
+I (4254) LAB7_4_CUSTOM: https://espressif.github.io/esp-jumpstart/qrcode.html?data=%7B%22ver%22%3A%22v1%22%2C%22name%22%3A%22PROV_AE4484%22%2C%22pop%22%3A%22abcd1234%22%2C%22transport%22%3A%22ble%22%7D
+I (4274) LAB7_4_CUSTOM: Payload JSON: {"ver":"v1","name":"PROV_AE4484","pop":"abcd1234","transport":"ble"}
+I (4274) NimBLE: GAP procedure initiated: advertise; 
+I (4284) NimBLE: disc_mode=2
+I (4284) NimBLE:  adv_channel_map=0 own_addr_type=0 adv_filter_policy=0 adv_itvl_min=256 adv_itvl_max=256
+I (4294) NimBLE: 
+
+I (4294) LAB7_4_CUSTOM: --------------------------------------------------
+I (4304) main_task: Returned from app_main()
+I (18134) protocomm_nimble: mtu update event; conn_handle=0 cid=4 mtu=256
+I (18944) security1: 5e 8b 66 62 56 d0 c1 cc b7 cb 50 af e8 53 e8 06
+I (18944) security1: a1 88 19 0b 61 b8 92 c6 ea 48 53 3c 14 f5 9c 72
+I (18944) security1: e3 a1 05 13 a0 24 5e 8f f4 a1 6e 4b ea a3 62 86
+I (18954) security1: 16 4b 08 cf 42 a5 9d 1e a0 c7 bd 29 f5 84 dd 4f
+I (19254) security1: 38 4f ce 09 ba d2 7c 75 04 ad 2b 6f f5 20 82 cd
+I (19254) security1: e3 81 f3 0c ec f0 15 d3 63 2a 1e 77 c4 5d 65 9d
+I (19254) security1: 78 77 9c 06 a4 71 e7 d0 b3 f7 b9 ef 42 17 8f bf
+I (19354) security1: 23 d0 53 24 9b 33 07 44 35 24 d0 24 f2 0f 16 ee
+I (19354) security1: ea b9 07 84 34 3b 84 73 ef 5b ac bc 8e 25 05 6b
+I (19364) security1: 5e 8b 66 62 56 d0 c1 cc b7 cb 50 af e8 53 e8 06
+I (19364) security1: a1 88 19 0b 61 b8 92 c6 ea 48 53 3c 14 f5 9c 72
+I (19374) security1: 08 78 0a dc 86 eb e9 d5 b0 2c 8b 1a 22 f3 37 31
+I (19374) security1: 0d f4 30 d0 cb 53 5f 76 3c b0 50 42 e6 68 4e 66
+I (19384) LAB7_4_CUSTOM: --------------------------------------------------
+I (19394) LAB7_4_CUSTOM: [SECURITY SUCCESS]: Valid PoP! Secured Session OK!
+I (19394) LAB7_4_CUSTOM: --------------------------------------------------
+W (33074) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2
+I (39214) wifi:new:<7,0>, old:<1,0>, ap:<255,255>, sta:<7,0>, prof:1, snd_ch_cfg:0x0
+I (39214) wifi:state: init -> auth (0xb0)
+I (39234) wifi:state: auth -> assoc (0x0)
+I (39244) wifi:state: assoc -> run (0x10)
+I (39264) wifi:connected with Siwapat-4418, aid = 1, channel 7, BW20, bssid = 30:0a:c5:a1:a8:3b
+I (39264) wifi:security: WPA2-PSK, phy: bgn, rssi: -32, cipher(pairwise:0x3, group:0x3), pmf:0
+I (39284) wifi:pm start, type: 1
+
+I (39284) wifi:dp: 1, bi: 102400, li: 3, scale listen interval from 307200 us to 307200 us
+I (39304) wifi:AP's beacon interval = 102400 us, DTIM period = 1
+I (40314) LAB7_4_CUSTOM: =================================================
+I (40314) LAB7_4_CUSTOM: [ONLINE]: IP Address: 192.168.1.189
+I (40314) LAB7_4_CUSTOM: =================================================
+I (40314) esp_netif_handlers: sta ip: 192.168.1.189, mask: 255.255.255.0, gw: 192.168.1.1
+I (40324) network_prov_mgr: STA Got IP
+I (40334) LAB7_4_CUSTOM: [SUCCESS]: Provisioning Completed!
+I (43634) NimBLE: GAP procedure initiated: advertise; 
+I (43634) NimBLE: disc_mode=2
+I (43634) NimBLE:  adv_channel_map=0 own_addr_type=0 adv_filter_policy=0 adv_itvl_min=256 adv_itvl_max=256
+I (43644) NimBLE: 
+
+I (44484) NimBLE: GAP procedure initiated: stop advertising.
+
+I (44484) NimBLE: GAP procedure initiated: stop advertising.
+
+I (44494) network_prov_mgr: Provisioning stopped
+I (44494) LAB7_4_CUSTOM: [PROV EVENT]: De-initializing BLE & Releasing BT Memory...
+I (44494) network_prov_scheme_ble: BTDM memory released
+```
+
+---
+
+## 3. ตารางบันทึกผลการทดลอง (Experiment Results)
+
+| สถานการณ์ทดสอบ | ค่า PoP ที่ป้อน | ผลลัพธ์บนแอปมือถือ | ข้อความ Log ใน Serial Monitor | รูปภาพ Screenshot |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. ป้อน PoP ผิดพลาด** | `wrong1234` | แอปแจ้งเตือน **"Authentication Failed"** / **"Incorrect PoP"** และไม่อนุญาตให้เชื่อมต่อ | `[SECURITY ALERT]: INVALID PoP / Unauthorized Access!` | *(เว้นพื้นที่ใส่รูป Screenshot: หน้าจอ Invalid PoP)* |
+| **2. ป้อน PoP ถูกต้อง** | `abcd1234` | ยืนยันตัวตนสำเร็จ สถาปนา Secured Session (AES-CTR) และเข้าสู่หน้าตั้งค่า Wi-Fi | `[SECURITY SUCCESS]: Valid PoP! Secured Session OK!` | *(เว้นพื้นที่ใส่รูป Screenshot: หน้าจอ Secured Session / Wi-Fi Setup)* |
+| **3. ส่ง Custom Data** | `TEST_DATA_999` | แอปส่ง Payload ไปยัง Endpoint `"custom-data"` และได้รับคำตอบกลับ `ACK_FROM_ESP32_SUCCESS` | `[CUSTOM DATA RECEIVED]: TEST_DATA_999` | *(เว้นพื้นที่ใส่รูป Screenshot: หน้าจอส่ง Custom Data)* |
+
+---
+
+## 4. ภาพบันทึกผลการทดลองจากแอปพลิเคชันมือถือ (ESP BLE Provisioning Screenshots)
+
+### 📸 รูปภาพที่ 1: หน้าจอแอปพลิเคชันเมื่อป้อน PoP ผิดพลาด (Invalid PoP / Session Initialisation Failed)
+*แอปพลิเคชันล้มเหลวตั้งแต่ขั้นตอนที่ 1 เป็นเครื่องหมายกากบาทสีส้ม พร้อมข้อความ **"Failed to initialise session with the device"** และแจ้งเตือนให้ Reboot บอร์ดเพื่อลองใหม่อีกครั้ง เนื่องจากไม่ผ่านการยืนยันตัวตนด้วย PoP (Security 1 Handshake Mismatch)*
+
+<p align="center">
+  <img src="./images/lab7_4_pop_error.png" alt="Invalid PoP - Failed to initialise session" width="300"/>
+</p>
+
+---
+
+### 📸 รูปภาพที่ 2: หน้าจอแอปพลิเคชันเมื่อใส่รหัสผ่าน Wi-Fi ผิดพลาด (Wi-Fi Authentication Error)
+*ผ่านขั้นตอน PoP Security Handshake เรียบร้อย (ขั้นตอนที่ 1 ผ่าน) แต่ขั้นตอนที่ 2 ล้มเหลวเป็นเครื่องหมายกากบาทสีส้ม พร้อมข้อความ **"Wi-Fi status: authentication error"** เนื่องจากใส่รหัสผ่าน Wi-Fi ไม่ถูกต้อง*
+
+<p align="center">
+  <img src="./images/lab7_4_wifi_auth_error.png" alt="Wi-Fi Authentication Error" width="300"/>
+</p>
+
+---
+
+### 📸 รูปภาพที่ 3: หน้าจอแอปพลิเคชันเมื่อใส่รหัสผ่านถูกต้องและเชื่อมต่อ Wi-Fi สำเร็จ (Successfully Provisioned)
+*แอปพลิเคชันผ่านทั้ง 2 ขั้นตอนอย่างสมบูรณ์ (Sending Wi-Fi credentials และ Confirming Wi-Fi connection) พร้อมข้อความแจ้งเตือน **"Device has been successfully provisioned!"***
+
+<p align="center">
+  <img src="./images/lab7_4_wifi_success.png" alt="Device Successfully Provisioned" width="300"/>
+</p>
+
+---
+
+## 5. คำถามท้ายการทดลอง (Post-Lab Questions)
+
+### ข้อที่ 1: การใช้ Proof-of-Possession (PoP) ช่วยป้องกันการโจมตีประเภทใดได้บ้าง?
+**คำตอบ:**
+1. **Rogue Provisioning / Unauthorized Hijacking (การยึดครองสิทธิ์โดยไม่ได้รับอนุญาต):** ป้องกันบุคคลภายนอกหรือผู้ไม่ประสงค์ดีที่อยู่ในรัศมีสัญญาณบลูทูธหรือสัญญาณ Wi-Fi SoftAP แอบเชื่อมต่อไปยังอุปกรณ์เพื่อสั่งเปลี่ยนการตั้งค่า หรือส่งเฟิร์มแวร์ที่ไม่ปลอดภัย
+2. **Man-In-The-Middle (MITM) & Eavesdropping:** รหัส PoP ถูกนำมาใช้เป็น Shared Secret ร่วมในการคำนวณ Verification Hash ระหว่างขั้นตอนการทำ Diffie-Hellman Key Exchange (X25519) ทำให้ผู้ดักฟังทราฟฟิก (Packet Sniffer) ไม่สามารถปลอมตัวเป็นผู้ใช้งานจริง และไม่สามารถถอดรหัสข้อความ SSID หรือ Wi-Fi Password ได้
+
+---
+
+### ข้อที่ 2: หากไม่มีการใช้ PoP (เช่น ใน Security 0) ผู้โจมตีที่อยู่ในรัศมีสัญญาณบลูทูธสามารถทำสิ่งใดกับอุปกรณ์ได้บ้าง?
+**คำตอบ:**
+- สามารถเชื่อมต่อและสั่งให้อุปกรณ์เปลี่ยนไปเกาะ Access Point ของผู้โจมตี (Rogue AP / Evil Twin AP) เพื่อทำการดักข้อมูล (Sniffing) หรือทำ DNS Spoofing
+- สามารถดักจับแพ็กเก็ตที่ส่งผ่านช่องทางบลูทูธ/HTTP และอ่านข้อมูลชื่อ Wi-Fi (SSID) รวมถึงรหัสผ่าน (Password) ได้ทันที เนื่องจากข้อมูลใน Security 0 ถูกส่งในรูปแบบข้อความธรรมดา (Plaintext) โดยไม่มีการเข้ารหัส
+- สามารถสั่งทำ Denial of Service (DoS) ต่ออุปกรณ์ได้ โดยส่งรหัสผ่าน Wi-Fi ปลอมเข้าไปเพื่อตัดอุปกรณ์ออกจากระบบเครือข่ายหลัก
+
+---
+
+### ข้อที่ 3: ในการประยุกต์ใช้งานเชิงพาณิชย์จริง เราสามารถนำ Custom Data Endpoint ไปใช้ส่งข้อมูลประเภทใดได้อีกบ้าง (ยกตัวอย่าง 2 กรณี)?
+**คำตอบ:**
+1. **การผูกบัญชีผู้ใช้และเปิดใช้งานอุปกรณ์ (Device Activation & User Account Binding):** ส่งข้อมูล `User_ID`, `Account_Token`, หรือ `Cloud_Activation_Key` ในระหว่างการทำ Provisioning เพื่อให้อุปกรณ์นำคีย์นี้ไปยืนยันสิทธิ์และลงทะเบียนเป็นของเจ้าของบัญชีบน Cloud Platform (เช่น AWS IoT Core, Google Cloud IoT หรือ SmartThings) ได้โดยอัตโนมัติในขั้นตอนเดียว
+2. **การตั้งค่าพารามิเตอร์เครือข่ายและเซิร์ฟเวอร์เฉพาะองค์กร (Enterprise Server & Configuration Parameters):** ส่งข้อมูล `MQTT_Broker_Endpoint`, `Port`, `Tenant_ID`, หรือ `Timezone / NTP_Server` สำหรับอุปกรณ์ที่ต้องนำไปติดตั้งในระบบเครือข่ายปิดขององค์กร (Private On-Premise Network) โดยไม่ต้องแก้ไข Source Code
+
+---
+
+### ข้อที่ 4: ในฟังก์ชัน `custom_prov_data_handler()` เหตุใดหน่วยความจำที่จัดสรรให้ `*outbuf` จึงถูก Free โดย Protocomm Layer อัตโนมัติหลังจากส่งข้อมูลเสร็จ?
+**คำตอบ:**
+เพราะสถาปัตยกรรมของ **Protocomm Framework** ถูกออกแบบมาให้ทำงานแบบ **Non-blocking / Asynchronous**:
+- เมื่อฟังก์ชัน Handler ทำงานเสร็จสิ้น ข้อมูลที่เตรียมไว้ใน `*outbuf` จะยังไม่ถูกส่งออกทางฮาร์ดแวร์ทันที แต่จะถูกส่งต่อไปยังตัวประมวลผลการเข้ารหัส (Security Encryption Engine) และบรรจุลง Transport Frame (HTTP Buffer หรือ BLE GATT Packet Buffer) ตามลำดับ
+- Protocomm จึงกำหนดข้อตกลง (API Contract) ให้ Handler เป็นผู้จัดสรรหน่วยความจำแบบไดนามิกบน Heap (ผ่าน `strdup()` หรือ `malloc()`) เพื่อรับประกันว่าพื้นที่หน่วยความจำนี้จะยังคงอยู่ตลอดช่วงเวลาที่กำลังส่งข้อมูล และเมื่อ Protocomm ส่งข้อมูลออกไปยังผู้รับเสร็จสมบูรณ์แล้ว ตัวเฟรมเวิร์ก Protocomm จะเป็นผู้สั่ง `free(*outbuf)` คืนสู่ระบบ Heap อัตโนมัติ เพื่อป้องกันปัญหา Memory Leak และลดภาระการจัดการหน่วยความจำของนักพัฒนา
