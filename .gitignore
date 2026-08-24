@@ -1,1 +1,17 @@
-**/build/**
+# Build directories
+build/
+**/build/
+
+# Managed components & dependencies
+managed_components/
+**/managed_components/
+dependencies.lock
+**/dependencies.lock
+
+# ESP-IDF temporary and config files
+sdkconfig.old
+**/sdkconfig.old
+
+# macOS and OS artifacts
+.DS_Store
+Thumbs.db
