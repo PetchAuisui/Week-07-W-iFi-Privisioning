@@ -699,3 +699,311 @@ I (51159) LAB7_2_SOFTAP: [PROV EVENT]: De-initializing Provisioning Manager
 2. **ปัญหา "No Internet Access" บนสมาร์ตโฟนรุ่นใหม่:** ระบบปฏิบัติการ iOS และ Android จะตรวจพบว่า Wi-Fi ของ ESP32 ไม่สามารถออกอินเทอร์เน็ตได้ และอาจทำการตัดการเชื่อมต่อไปใช้ Cellular Data (4G/5G) หรือ Wi-Fi เดิมอัตโนมัติ ทำให้การ Provisioning ล้มเหลว
 3. **โทรศัพท์สูญเสียการเชื่อมต่ออินเทอร์เน็ตชั่วคราว:** ในช่วงเวลาที่เชื่อมต่อกับ SoftAP ของอุปกรณ์ โทรศัพท์จะไม่สามารถโหลดข้อมูลจากอินเทอร์เน็ตภายนอกได้
 4. **ความได้เปรียบของ BLE (Bluetooth Low Energy):** การใช้ BLE สามารถค้นหา เชื่อมต่อ และส่งข้อมูล Wi-Fi ให้กับอุปกรณ์ได้ทันทีภายในแอปพลิเคชันเดียวแบบเบื้องหลัง (Background In-App Connection) โดยที่ผู้ใช้ไม่ต้องออกจากแอป และมือถือยังใช้งานอินเทอร์เน็ตได้ตามปกติตลอดเวลา
+
+---
+---
+
+# ใบงานที่ 7.3 การคอนฟิก Wi-Fi ผ่าน BLE Scheme และการสืบสวน GATT Services (BLE Forensics)
+
+---
+
+## 1. กิจกรรมถอดรหัสซอร์สโค้ดและเขียนผังงาน (Code Deconstruction & BLE GATT Architecture Assignment)
+
+### ภารกิจที่ 1: ผังโครงสร้าง GATT Tree & Endpoint Mapping
+แผนภาพโครงสร้างลำดับชั้น (GATT Tree Structure) แสดงความสัมพันธ์ระหว่าง Primary Service (128-bit UUID), Characteristics แต่ละตัว และ Descriptor 0x2901 (Characteristic User Description) ที่ผูกเข้ากับ Protocomm Endpoints
+
+```mermaid
+graph TD
+    subgraph BLE_GATT_SERVER["ESP32 BLE GATT Server (Device Name: PROV_AE4484)"]
+        direction TB
+        
+        Service["<b>Primary Service</b><br/>UUID: <code>021a9004-0382-4aea-bff4-6b3f1c5adfb4</code>"]
+        
+        subgraph Endpoints["GATT Characteristics & Protocomm Endpoints"]
+            direction TB
+            
+            subgraph C1["Characteristic 1 (UUID: ...ff51)"]
+                Desc1["<b>Descriptor 0x2901:</b> <code>'prov-session'</code><br/><i>หน้าที่: แลกเปลี่ยนกุญแจ X25519 + ตรวจสอบ PoP Key (Security 1 Handshake)</i>"]
+            end
+            
+            subgraph C2["Characteristic 2 (UUID: ...ff52)"]
+                Desc2["<b>Descriptor 0x2901:</b> <code>'prov-config'</code><br/><i>หน้าที่: รับค่า SSID และ Password ของ Wi-Fi ที่เข้ารหัสแล้ว</i>"]
+            end
+            
+            subgraph C3["Characteristic 3 (UUID: ...ff53)"]
+                Desc3["<b>Descriptor 0x2901:</b> <code>'prov-scan'</code><br/><i>หน้าที่: สั่งสแกนหาเครือข่าย Wi-Fi และส่งรายการ SSID/RSSI กลับไปที่แอป</i>"]
+            end
+            
+            subgraph C4["Characteristic 4 (UUID: ...ff54)"]
+                Desc4["<b>Descriptor 0x2901:</b> <code>'proto-ver'</code><br/><i>หน้าที่: อ่านเวอร์ชันของ Protocomm Protocol และ Security Schemes ที่รองรับ</i>"]
+            end
+            
+            subgraph C5["Characteristic 5 (UUID: ...ff55)"]
+                Desc5["<b>Descriptor 0x2901:</b> <code>'custom-data'</code><br/><i>หน้าที่: รับ-ส่งข้อมูลเฉพาะของแอปพลิเคชัน (Custom Application Payload)</i>"]
+            end
+        end
+        
+        Service --> C1
+        Service --> C2
+        Service --> C3
+        Service --> C4
+        Service --> C5
+    end
+    
+    style Service fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    style C1 fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1.5px;
+    style C2 fill:#e8f5e9,stroke:#388e3c,stroke-width:1.5px;
+    style C3 fill:#fff8e1,stroke:#fbc02d,stroke-width:1.5px;
+    style C4 fill:#ede7f6,stroke:#512da8,stroke-width:1.5px;
+    style C5 fill:#fbe9e7,stroke:#d84315,stroke-width:1.5px;
+```
+
+---
+
+### ภารกิจที่ 2: ผังลำดับการทำงานและการคืนหน่วยความจำ Bluetooth (BLE Lifecycle & Memory Reclaim Flow)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 👤 ผู้ใช้งาน (User)
+    participant App as 📱 ESP BLE Prov App<br/>(Smartphone)
+    participant ESP as ⚡ ESP32 BLE Stack<br/>(NimBLE / Protocomm)
+    participant Memory as 💾 ESP32 Memory Pool<br/>(DRAM / BTDM Heap)
+    participant Router as 📡 Wi-Fi Router / Hotspot<br/>(Siwapat's iPad Pro)
+
+    Note over ESP, Memory: 1. เริ่มต้นระบบ (app_main)<br/>- กำหนด Custom 128-bit UUID: 021a9004-...<br/>- จอง BT Controller RAM (~30-60 KB DRAM)<br/>- เริ่ม BLE Advertising: "PROV_AE4484"<br/>- Trigger: NETWORK_PROV_START -> LED 2 (GPIO 4) ติดสว่าง (ON)
+    
+    User->>App: เปิดแอป เลือก BLE และเลือก "PROV_AE4484"
+    App->>ESP: ทำการเชื่อมต่อ BLE GATT Server Connection
+    Note over ESP: Trigger: PROTOCOMM_TRANSPORT_BLE_CONNECTED
+
+    rect rgb(240, 248, 255)
+    Note over App, ESP: 2. การสร้าง Session เข้ารหัส (Security 1 Handshake)
+    App->>ESP: เขียนข้อมูลลง Characteristic "prov-session" (Public Key + PoP: "abcd1234")
+    ESP-->>App: ตอบกลับ Device Public Key ผ่าน Characteristic "prov-session"
+    Note over App, ESP: สถาปนาการเข้ารหัส AES-CTR สำเร็จ
+    end
+
+    rect rgb(255, 250, 240)
+    Note over App, ESP: 3. การส่งข้อมูล Credentials
+    App->>ESP: เขียนข้อมูลลง Characteristic "prov-config" (SSID: "Siwapat's iPad Pro" + Pass)
+    Note over ESP: Trigger: NETWORK_PROV_WIFI_CRED_RECV
+    end
+
+    rect rgb(240, 255, 240)
+    Note over ESP, Router: 4. ทดลองเชื่อมต่อ Wi-Fi และยืนยันผล
+    ESP->>Router: ทำการเชื่อมต่อ Wi-Fi Station Mode
+    Router-->>ESP: เชื่อมต่อสำเร็จ จ่าย IP Address: 172.20.10.2
+    
+    Note over ESP: Trigger: IP_EVENT_STA_GOT_IP<br/>- LED 1 (GPIO 2) -> ON (ติดสว่าง)<br/>- Trigger: NETWORK_PROV_WIFI_CRED_SUCCESS<br/>- LED 2 (GPIO 4) -> OFF (ดับลง)
+    
+    ESP-->>App: แจ้งเตือนสถานะสำเร็จผ่าน Characteristic "prov-config"
+    App-->>User: แสดงหน้าจอ "Provisioning Successful!"
+    end
+
+    rect rgb(255, 235, 238)
+    Note over ESP, Memory: 5. ปลดการเชื่อมต่อ และคืนหน่วยความจำ Bluetooth (Memory Reclaim)
+    App->>ESP: ตัดการเชื่อมต่อ BLE (Disconnection)
+    Note over ESP: Trigger: PROTOCOMM_TRANSPORT_BLE_DISCONNECTED<br/>Trigger: NETWORK_PROV_END<br/>- เรียก network_prov_mgr_deinit()<br/>- หยุด BLE Advertising & ปิด NimBLE Stack
+    
+    ESP->>Memory: เรียก esp_bt_mem_release(ESP_BT_MODE_BTDM)
+    Note over Memory: Log: "network_prov_scheme_ble: BTDM memory released"<br/>คืนพื้นที่ DRAM ~30-60 KB กลับสู่ System Heap ให้ Application ใช้งาน!
+    end
+```
+
+---
+
+## 2. ตารางบันทึกผลการทดลอง (Experiment Results)
+
+| รายการตรวจสอบ | ผลการทดลอง / ข้อมูลที่สังเกตได้จริง |
+| :--- | :--- |
+| **1. BLE Device Name ที่สแกนเจอ** | `PROV_AE4484` *(Bluetooth MAC Address: `88:57:21:AE:44:86`)* |
+| **2. Primary Service UUID (128-bit)** | `021a9004-0382-4aea-bff4-6b3f1c5adfb4` |
+| **3. Characteristic Endpoint ที่พบ (Descriptor 0x2901)** | **1.** `prov-session` *(UUID: `...ff51` สำหรับ Security 1 Handshake)*<br/>**2.** `prov-config` *(UUID: `...ff52` สำหรับส่ง SSID และ Password)*<br/>**3.** `prov-scan` *(UUID: `...ff53` สำหรับสั่งสแกน Wi-Fi)*<br/>**4.** `proto-ver` *(UUID: `...ff54` สำหรับระบุรุ่นโปรโตคอล)*<br/>**5.** `custom-data` *(UUID: `...ff55` สำหรับ Custom Application Data)* |
+| **4. พฤติกรรมไฟ LED แต่ละดวง** | **LED 2 (GPIO 4 / BLE Prov):** ช่วงรอต่อ BLE ติดสว่าง (`1`) และดับลง (`0`) เมื่อ Provisioning สำเร็จ<br/>**LED 1 (GPIO 2 / On-board LED):** ดับในช่วงแรก และติดสว่างค้างเมื่อเชื่อมต่อ Wi-Fi และได้รับ IP สำเร็จ (`172.20.10.2`) |
+| **5. พฤติกรรมเมื่อต่อ Wi-Fi สำเร็จ (การคืน RAM)** | **มี Log คืนหน่วยความจำ Bluetooth ชัดเจน**<br/>`I (104963) network_prov_scheme_ble: BTDM memory released`<br/>ระบบสั่งปิด Bluetooth Controller และคืนพื้นที่ DRAM ให้ระบบ Heap |
+| **6. เวลาที่ใช้ตั้งแต่เริ่มจนจบกระบวนการ (วินาที)** | ประมาณ **103.8 วินาที** *(ตั้งแต่เริ่มเปิด BLE Advertising ที่ `1163ms` จนจบและคืน BTDM Memory ที่ `104963ms`)* |
+
+---
+
+### บันทึก Serial Monitor Log จากการทดลองจริง (ESP-IDF v6.0.2 Log)
+```text
+I (27) boot: ESP-IDF v6.0.2 2nd stage bootloader
+I (27) boot: compile time Aug 24 2026 11:07:27
+I (27) boot: Multicore bootloader
+I (29) boot: chip revision: v3.1
+I (32) boot.esp32: SPI Speed      : 40MHz
+I (35) boot.esp32: SPI Mode       : DIO
+I (39) boot.esp32: SPI Flash Size : 2MB
+I (42) boot: Enabling RNG early entropy source...
+I (47) boot: Partition Table:
+I (49) boot: ## Label            Usage          Type ST Offset   Length
+I (56) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (62) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (69) boot:  2 factory          factory app      00 00 00010000 00150000
+I (75) boot: End of partition table
+I (79) esp_image: segment 0: paddr=00010020 vaddr=3f400020 size=2a6b0h (173744) map
+I (148) esp_image: segment 1: paddr=0003a6d8 vaddr=3ffbdb60 size=05940h ( 22848) load
+I (157) esp_image: segment 2: paddr=00040020 vaddr=400d0020 size=c25b0h (796080) map
+I (441) esp_image: segment 3: paddr=001025d8 vaddr=3ffc34a0 size=009dch (  2524) load
+I (442) esp_image: segment 4: paddr=00102fbc vaddr=40080000 size=1f880h (129152) load
+I (498) esp_image: segment 5: paddr=00122844 vaddr=50000000 size=00028h (    40) load
+I (514) boot: Loaded app from partition at offset 0x10000
+I (514) boot: Disabling RNG early entropy source...
+I (525) cpu_start: Multicore app
+I (533) cpu_start: GPIO 3 and 1 are used as console UART I/O pins
+I (533) cpu_start: Pro cpu start user code
+I (533) cpu_start: cpu freq: 160000000 Hz
+I (535) app_init: Application information:
+I (539) app_init: Project name:     lab7_3_ble_provisioning
+I (544) app_init: App version:      0eb9071-dirty
+I (548) app_init: Compile time:     Aug 24 2026 11:07:21
+I (553) app_init: ELF file SHA256:  ca20df6bc...
+I (558) app_init: ESP-IDF:          v6.0.2
+I (562) efuse_init: Min chip rev:     v0.0
+I (565) efuse_init: Max chip rev:     v3.99 
+I (569) efuse_init: Chip rev:         v3.1
+I (574) heap_init: Initializing. RAM available for dynamic allocation:
+I (580) heap_init: At 3FFAFF10 len 000000F0 (0 KiB): DRAM
+I (585) heap_init: At 3FFB6388 len 00001C78 (7 KiB): DRAM
+I (590) heap_init: At 3FFB9A20 len 00004108 (16 KiB): DRAM
+I (595) heap_init: At 3FFC9238 len 00016DC8 (91 KiB): DRAM
+I (600) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM
+I (606) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
+I (611) heap_init: At 4009F880 len 00000780 (1 KiB): IRAM
+W (618) spi_flash: Detected boya flash chip but using generic driver. For optimal functionality, enable `SPI_FLASH_SUPPORT_BOYA_CHIP` in menuconfig
+I (629) spi_flash: detected chip: generic
+I (633) spi_flash: flash io: dio
+W (636) spi_flash: Detected size(4096k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (649) coexist: coex firmware version: 6f3d08c
+I (653) main_task: Started on CPU0
+I (653) main_task: Calling app_main()
+I (693) wifi:wifi driver task: 3ffcd4a0, prio:23, stack:6656, core=0
+I (693) wifi:wifi firmware version: 00ad238
+I (693) wifi:wifi certification version: v7.0
+I (693) wifi:config NVS flash: enabled
+I (693) wifi:config nano formatting: disabled
+I (703) wifi:Init data frame dynamic rx buffer num: 32
+I (703) wifi:Init static rx mgmt buffer num: 5
+I (713) wifi:Init management short buffer num: 32
+I (713) wifi:Init dynamic tx buffer num: 32
+I (713) wifi:Init static rx buffer size: 1600
+I (723) wifi:Init static rx buffer num: 10
+I (723) wifi:Init dynamic rx buffer num: 32
+I (733) wifi_init: rx ba win: 6
+I (733) wifi_init: accept mbox: 6
+I (733) wifi_init: tcpip mbox: 32
+I (733) wifi_init: udp mbox: 6
+I (743) wifi_init: tcp mbox: 6
+I (743) wifi_init: tcp tx win: 5760
+I (743) wifi_init: tcp rx win: 5760
+I (753) wifi_init: tcp mss: 1440
+I (753) wifi_init: WiFi IRAM OP enabled
+I (753) wifi_init: WiFi RX IRAM OP enabled
+I (763) network_prov_scheme_ble: BT memory released
+I (763) LAB7_3_BLE: Starting BLE Provisioning (Name: PROV_AE4484, PoP: abcd1234)
+I (773) phy_init: phy_version 4863,a3a4459,Oct 28 2025,14:30:06
+W (773) phy_init: failed to load RF calibration data (0x1102), falling back to full calibration
+I (863) phy_init: Saving new calibration data due to checksum failure or outdated calibration data, mode(2)
+I (873) wifi:mode : sta (88:57:21:ae:44:84)
+I (873) wifi:enable tsf
+W (883) BTDM_INIT: esp_bt_controller_rom_mem_release already released, mode 2
+I (883) BTDM_INIT: BT controller compile version [e02a38e]
+I (883) BTDM_INIT: Using main XTAL as clock source
+I (893) BTDM_INIT: Bluetooth MAC: 88:57:21:ae:44:86
+I (1143) protocomm_nimble: BLE Host Task Started
+I (1153) network_prov_mgr: Provisioning started with service name : PROV_AE4484 
+I (1163) LAB7_3_BLE: [PROV EVENT]: BLE Provisioning Started (Advertising)!
+I (1163) LAB7_3_BLE: --------------------------------------------------
+I (1163) LAB7_3_BLE: [QR CODE URL]: Click or copy the URL below:
+I (1173) LAB7_3_BLE: https://espressif.github.io/esp-jumpstart/qrcode.html?data=%7B%22ver%22%3A%22v1%22%2C%22name%22%3A%22PROV_AE4484%22%2C%22pop%22%3A%22abcd1234%22%2C%22transport%22%3A%22ble%22%7D
+I (1193) LAB7_3_BLE: Payload JSON: {"ver":"v1","name":"PROV_AE4484","pop":"abcd1234","transport":"ble"}
+I (1203) NimBLE: GAP procedure initiated: advertise; 
+I (1203) NimBLE: disc_mode=2
+I (1203) NimBLE:  adv_channel_map=0 own_addr_type=0 adv_filter_policy=0 adv_itvl_min=256 adv_itvl_max=256
+I (1213) NimBLE: 
+
+I (1213) LAB7_3_BLE: --------------------------------------------------
+I (1223) main_task: Returned from app_main()
+I (49013) LAB7_3_BLE: [BLE]: Smartphone Connected to GATT Server!
+I (49163) protocomm_nimble: mtu update event; conn_handle=0 cid=4 mtu=256
+I (50523) security1: 5e b3 23 64 ae 32 bb 51 79 88 7e 0c 42 17 16 b6
+I (50523) security1: ff f2 14 ce 76 0b 44 bc 5f e7 21 82 d7 96 9f 1f
+I (50523) security1: 52 18 0d 8f 56 5c 33 16 2c 1e ca 31 4f cf 4a 86
+I (50533) security1: f3 ee 52 25 b2 1b 87 72 ba d4 53 1a 5d 13 23 21
+I (50823) security1: 40 f6 d2 9a c1 23 94 e4 9b 61 ca e7 89 05 a0 86
+I (50823) security1: 71 87 1d b2 5a 7b da f1 e1 8c ec 63 01 05 a3 ad
+I (50823) security1: 1c 02 65 97 8e f6 eb 55 53 2f 1a 75 ce 79 09 d9
+I (50933) security1: b1 9b b0 af 54 4a 8c f6 87 86 ef 4f cb a6 6e 19
+I (50933) security1: e2 c8 ee 1e 53 66 5c e7 ed eb 40 39 b9 10 bd 85
+I (50933) security1: 5e b3 23 64 ae 32 bb 51 79 88 7e 0c 42 17 16 b6
+I (50943) security1: ff f2 14 ce 76 0b 44 bc 5f e7 21 82 d7 96 9f 1f
+I (50943) security1: 4e a4 01 47 36 c0 b9 b4 2b e4 05 a7 e1 d3 bd 33
+I (50953) security1: 6d a9 76 b4 62 e5 d0 9f c1 ca a1 30 bd 91 22 bd
+W (93533) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2
+I (93573) LAB7_3_BLE: =================================================
+I (93573) LAB7_3_BLE: [BLE CREDENTIALS RECEIVED]:
+I (93573) LAB7_3_BLE:   -> SSID     : Siwapat's iPad Pro
+I (93573) LAB7_3_BLE:   -> Password : **********
+I (93583) LAB7_3_BLE: =================================================
+I (99673) wifi:new:<6,0>, old:<1,0>, ap:<255,255>, sta:<6,0>, prof:1, snd_ch_cfg:0x0
+I (99673) wifi:state: init -> auth (0xb0)
+I (99693) wifi:state: auth -> assoc (0x0)
+I (99703) wifi:state: assoc -> run (0x10)
+I (99753) wifi:connected with Siwapat's iPad Pro, aid = 1, channel 6, BW20, bssid = 0e:c9:2f:74:0b:5b
+I (99753) wifi:security: WPA2-PSK, phy: bgn, rssi: -55, cipher(pairwise:0x3, group:0x3), pmf:0
+I (99773) wifi:pm start, type: 1
+
+I (99773) wifi:dp: 1, bi: 102400, li: 3, scale listen interval from 307200 us to 307200 us
+I (99773) wifi:AP's beacon interval = 102400 us, DTIM period = 1
+I (100873) LAB7_3_BLE: =================================================
+I (100873) LAB7_3_BLE: [ONLINE]: Connected to Wi-Fi with IP: 172.20.10.2
+I (100873) LAB7_3_BLE: =================================================
+I (100873) esp_netif_handlers: sta ip: 172.20.10.2, mask: 255.255.255.240, gw: 172.20.10.1
+I (100883) network_prov_mgr: STA Got IP
+I (100893) LAB7_3_BLE: [SUCCESS]: BLE Provisioning Successful!
+W (104123) LAB7_3_BLE: [BLE]: Smartphone Disconnected from GATT Server
+W (104133) LAB7_3_BLE: [BLE]: Smartphone Disconnected from GATT Server
+I (104133) NimBLE: GAP procedure initiated: advertise; 
+I (104133) NimBLE: disc_mode=2
+I (104143) NimBLE:  adv_channel_map=0 own_addr_type=0 adv_filter_policy=0 adv_itvl_min=256 adv_itvl_max=256
+I (104153) NimBLE: 
+
+I (104943) NimBLE: GAP procedure initiated: stop advertising.
+
+I (104953) NimBLE: GAP procedure initiated: stop advertising.
+
+I (104963) network_prov_mgr: Provisioning stopped
+I (104963) LAB7_3_BLE: [PROV EVENT]: De-initializing BLE & Releasing BT Memory...
+I (104963) network_prov_scheme_ble: BTDM memory released
+```
+
+---
+
+## 3. คำถามท้ายการทดลอง (Post-Lab Questions)
+
+### ข้อที่ 1: เหตุใด BLE Provisioning จึงไม่ส่งผลให้สัญญาณ Wi-Fi บนสมาร์ตโฟนของผู้ใช้หลุดระหว่างทำรายการ?
+**คำตอบ:**
+เพราะการสื่อสารระหว่างสมาร์ตโฟนกับ ESP32 ในโหมดนี้ ทำงานผ่าน **Bluetooth Low Energy (2.4 GHz ISM Band ผ่าน Bluetooth Controller)** ซึ่งเป็นโมดูลฮาร์ดแวร์คนละส่วนกับ Wi-Fi Controller ของสมาร์ตโฟน 
+- สมาร์ตโฟนจึงสามารถแลกเปลี่ยนข้อมูลกับ ESP32 ผ่านบลูทูธได้ในขณะที่ยังคงเชื่อมต่ออินเทอร์เน็ตผ่าน Wi-Fi บ้าน หรือ Cellular Data (4G/5G) ไว้ได้อย่างต่อเนื่องตลอดเวลา
+- ต่างจากโหมด SoftAP ที่สมาร์ตโฟนต้องตัดขาดจาก Wi-Fi เดิมเพื่อมาเกาะ Wi-Fi ชั่วคราวของ ESP32
+
+---
+
+### ข้อที่ 2: Descriptor `0x2901` มีความสำคัญอย่างไรต่อการที่แอปพลิเคชันมือถือจะทราบว่า Characteristic แต่ละตัวใช้ทำหน้าที่อะไร?
+**คำตอบ:**
+Descriptor **`0x2901` (Characteristic User Description Descriptor)** เป็นมาตรฐานของ Bluetooth SIG ที่เก็บข้อความ String บรรยายหน้าที่หรือชื่อ Endpoint ของ Characteristic นั้น ๆ เช่น:
+- `"prov-session"` $\rightarrow$ ให้แอปรู้ว่าช่องทางนี้ใช้สำหรับทำ Security Handshake
+- `"prov-config"` $\rightarrow$ ให้แอปรู้ว่าช่องทางนี้ใช้ส่ง Wi-Fi SSID และ Password
+- `"prov-scan"` $\rightarrow$ ให้แอปรู้ว่าช่องทางนี้ใช้สั่งสแกนหารายชื่อ Wi-Fi
+
+ทำให้แอปพลิเคชันบนสมาร์ตโฟน (ทั้งแอปเฉพาะอย่าง ESP BLE Provisioning หรือ Generic BLE Scanner) สามารถอ่านค่า Descriptor นี้แล้ว **จับคู่ (Map) ฟังก์ชันการทำงานได้อย่างถูกต้องและยืดหยุ่น** โดยที่ฝั่งแอปไม่ต้องจำกัดหรือ Hardcode UUID ไว้ตายตัว
+
+---
+
+### ข้อที่ 3: การที่ ESP-IDF มีฟังก์ชัน `esp_bt_mem_release()` มีประโยชน์อย่างไรต่อการทำงานของแอปพลิเคชัน IoT หลังเชื่อมต่อ Wi-Fi สำเร็จ?
+**คำตอบ:**
+ชุดคำสั่งและบัฟเฟอร์ของ Bluetooth Controller Stack (BTDM / NimBLE) ใช้พื้นที่หน่วยความจำภายใน **Internal DRAM ของ ESP32 เป็นจำนวนมาก (ประมาณ 30 KB ถึง 60 KB)**
+- เมื่อกระบวนการ Provisioning เสร็จสิ้นลง อุปกรณ์ IoT จะเข้าสู่สถานะการทำงานปกติผ่านเครือข่าย Wi-Fi เท่านั้น และไม่มีความจำเป็นต้องเปิดใช้งานบลูทูธอีกต่อไป
+- การเรียกใช้ฟังก์ชัน **`esp_bt_mem_release(ESP_BT_MODE_BTDM)`** (ผ่าน Option `NETWORK_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM`) จะทำการปิดวงจร Bluetooth Controller และ **คืนพื้นที่ DRAM ทั้งหมดกลับเข้าสู่ System Heap Memory**
+- ประโยชน์คือ ทำให้เฟิร์มแวร์มีหน่วยความจำ RAM เหลือว่างเพิ่มขึ้นมหาศาล สำหรับนำไปใช้รัน Task หลักของระบบ, บริหารจัดการคิวส่งข้อมูล MQTT/HTTP, หรือใช้รองรับ TLS/HTTPS Crypto Buffers ขนาดใหญ่ได้อย่างเสถียร โดยไม่เกิดปัญหาหน่วยความจำไม่เพียงพอ (Out of Memory / Heap Starvation)
